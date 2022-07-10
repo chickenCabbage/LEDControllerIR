@@ -1,10 +1,5 @@
-#include <IRremote.h>
-
-#define debug true
- 
-#define IR_RECEIVE_PIN 2		//IR sensor pin
-IRrecv IrReceiver(IR_RECEIVE_PIN);
-decode_results results;
+#define DEBUG true
+#define NOIR
 
 #define STATUS_LED 3
 #define ERR_LED 13
@@ -20,19 +15,21 @@ decode_results results;
 long currCom = 0;			//current command
 long lastCom = 0;			//last valid command
 
+bool delayAfter = false;	//should the controller flash the status/err LEDs?
+
 byte selectedChannel = 0;	//the channel to be acted upon
 bool channelSelect = false;	//are we selecting a channel?
 byte channelsAmnt;			//the amount of available channels according to channels[]
 
 struct channel {
-	byte pin;		//arduino pin
-	int outValue;	//current output value
-	int lastValue;	//last output value
+	byte pin;				//arduino pin
+	int outValue;			//current output value
+	int lastValue;			//last output value
 	
 	//special actions variables:
-	int specialCode; //what action is performed
-	bool fadeRising; //is the outValue rising or falling
-	byte fadeDelay;	 //delay between each outValue change
+	int specialCode;		//what action is performed
+	bool fadeRising;		//is the outValue rising or falling
+	byte fadeDelay;			//delay between each outValue change
 };
 
 channel channels[] = {
@@ -47,6 +44,51 @@ channel channels[] = {
  * (IRremote/src/private/IRremoteBoardDefs.h)
  */
 
+#ifndef NOIR
+	#include <IRremote.h>
+	#define IR_RECEIVE_PIN 2	//IR sensor pin
+	IRrecv IrReceiver(IR_RECEIVE_PIN);
+	decode_results results;
+#else
+	int translateToIR(char recChar) {
+		switch(recChar) {
+			case 'o': //on/off command
+				return 0xFF38C7;
+			case 'u': //up key
+				return 0xFF18E7;
+			case 'd': //down key
+				return 0xFF4AB5;
+			case '0':
+				return 0xFF9867;
+			case '1':
+				return 0xFFA25D;
+			case '2':
+				return 0xFF629D;
+			case '3':
+				return 0xFFE21D;
+			case '4':
+				return 0xFF22DD;
+			case '5':
+				return 0xFF02FD;
+			case '6':
+				return 0xFFC23D;
+			case '7':
+				return 0xFFE01F;
+			case '8':
+				return 0xFFA857;
+			case '9':
+				return 0xFF906F;
+			case '*':
+				return 0xFF6897;
+			case '#':
+				return 0xFFB04F;
+	
+			default:
+				return 0;
+		}
+	}
+#endif
+
 void setup() {
 	OSCCAL = 0x39;
 	channelsAmnt = sizeof(channels)/sizeof(channels[0]);
@@ -55,42 +97,58 @@ void setup() {
     for(byte i=0; i<channelsAmnt; i++) {
     	pinMode(channels[i].pin, OUTPUT);
     }
-    
-    IrReceiver.enableIRIn();  //start the receiver
-    IrReceiver.blink13(false); //enable feedback LED
+
+    #ifndef NOIR
+		IrReceiver.enableIRIn();  //start the receiver
+		IrReceiver.blink13(false); //enable feedback LED
+	 #endif
 
     digitalWrite(ERR_LED, LOW);
     
-    if(debug) {
-    	Serial.begin(115200);
+    if(DEBUG) {
+    	Serial.begin(9600);
 		while(!Serial);
     	Serial.println("Ready.");
     }
 }
 void commands() {
 	//if there is a decoded result input:
+	#ifndef NOIR
 	if(IrReceiver.decode(&results)) {
-		if(debug) {
-			Serial.print("0x"); //clarify the values are hex numbers
-			Serial.println(results.value, HEX);
-		}
 		currCom = results.value;
+	#else
+	String recComPrint = Serial.readString();
+	char recCom = recComPrint[0];
+	if(DEBUG) Serial.print("Got " + recComPrint + ", ");
+	currCom = translateToIR(recCom);
+	if(DEBUG) Serial.println("translated: 0x" + String(currCom, HEX) + ".");
+	if(currCom) {
+	#endif
+		if(DEBUG) {
+			Serial.print("0x"); //clarify the values are hex numbers
+			Serial.println(currCom, HEX);
+		}
 		if(currCom == 0xFFFFFFFF) { //repeat
       		currCom = lastCom;
-			if(debug) {
+			if(DEBUG) {
 				Serial.print(F("Repeating 0x"));
       			Serial.println(currCom, HEX);
 			}
 		}
 
-		bool delayAfter = false;
+		delayAfter = false;
 		if(selectedChannel == 0) { //if all channels are selected:
 			for(byte i=0; i<channelsAmnt; i++) { //go over every channel:
-				delayAfter = action(currCom, channels[i]);
+				channels[i] = action(currCom, channels[i]);
 			}
 		}
 		else { //if not all channels are selected, act only for one channel:
-			delayAfter = action(currCom, channels[selectedChannel-1]);
+			channels[selectedChannel-1] = action(currCom, channels[selectedChannel-1]);
+		}
+
+		//now update the channel outValues:
+		for(byte i=0; i<channelsAmnt; i++) {
+			analogWrite(channels[i].pin, channels[i].outValue);
 		}
 		
 		if(delayAfter) {
@@ -99,38 +157,33 @@ void commands() {
 			digitalWrite(STATUS_LED, LOW);
 			digitalWrite(ERR_LED, LOW);
 		}
-
-		//now update the channel outValues:
-		for(byte i=0; i<channelsAmnt; i++) {
-			analogWrite(channels[i].pin, channels[i].outValue);
-		}
 		//update lastCom
 		if(currCom != 0xFFFFFFFF && currCom != 0) lastCom = currCom;
 	}
 } //end commands()
 
-bool action(int currCom, channel selCh) {
+channel action(int currCom, channel selCh) {
 	int outValue = selCh.outValue;
 	int lastValue = selCh.lastValue;
 	int specialCode = selCh.specialCode;
 	bool fadeRising = selCh.fadeRising;
 	byte fadeDelay = selCh.fadeDelay;
 	
-	bool delayAfter = false; //add a delay after this command. returned at end.
+	delayAfter = false; //add a delay after this command.
 	switch(currCom) {
 		case 0xFF38C7: //on/off
-      		if(debug) Serial.println(F("On/off"));
+      		if(DEBUG) Serial.println(F("On/off"));
 			if(outValue > 0) outValue = 0;
   			else outValue = lastValue;
   			delayAfter = true;
 			specialCode = 0;
 			break;
 		case 0xFF18E7: //up
-      		if(debug) Serial.println(F("Up"));
+      		if(DEBUG) Serial.println(F("Up"));
 			//if you're in a fade routine:
 			if(specialCode == 0xFADE) {
 				fadeDelay++; //decrement the delay value
-				if(debug) {
+				if(DEBUG) {
 					Serial.print("Fade delay: ");
 					Serial.println(fadeDelay);
 				}
@@ -147,12 +200,12 @@ bool action(int currCom, channel selCh) {
 			specialCode = 0;
 			break;
 		case 0xFF4AB5: //down
-      		if(debug) Serial.println(F("Down"));
+      		if(DEBUG) Serial.println(F("Down"));
 			//if you're in a fade routine:
 			if(specialCode == 0xFADE) {
 				fadeDelay--; //decrement the delay value
 				if(fadeDelay == 0) fadeDelay = 1;
-				if(debug) {
+				if(DEBUG) {
 					Serial.print("Fade delay: ");
 					Serial.println(fadeDelay);
 				}
@@ -252,16 +305,16 @@ bool action(int currCom, channel selCh) {
 
 		case 0xFF6897: //asterisk button pressed, fade
 			//toggle the action state and print:
-			if(debug) Serial.print("Fade ");
+			if(DEBUG) Serial.print("Fade ");
 			if(!specialCode) {
 				specialCode = 0xFADE; //define the action
 				currCom = specialCode;
-				if(debug) Serial.println("turned on");
+				if(DEBUG) Serial.println("turned on");
 				delay(100);
 			}
 			else {
 				specialCode = 0;
-				if(debug) Serial.println("turned off");
+				if(DEBUG) Serial.println("turned off");
 				delayAfter = true;
 			}
 		
@@ -281,35 +334,48 @@ bool action(int currCom, channel selCh) {
 			break;
 		
 		default:
-			if(debug) Serial.println(F("Unrecognized command."));
+			if(DEBUG) Serial.println(F("Unrecognized command."));
 			digitalWrite(ERR_LED, HIGH);
   			delayAfter = true;
 			break;
 	}
 
 	if(!specialCode) { //if you're in the middle of a special action routine
-		if(debug) {
+		if(DEBUG) {
+			Serial.print(F("Acting on channel at pin: "));
+			Serial.println(selCh.pin, DEC);
 			Serial.print(F("Out value: "));
 			Serial.println(outValue, DEC);
 			Serial.print(F("Last value: "));
 			Serial.println(lastValue, DEC);
 			Serial.print(F("Last command: 0x"));
 			Serial.println(lastCom, HEX);
+			Serial.println();
 		}
 	}
-
-	if(outValue >= MIN_BRIGHTNESS) lastValue = outValue;
+	
+	if(outValue >= MIN_BRIGHTNESS) {
+		if(DEBUG) {
+			Serial.print(F("Set lastValue: "));
+			Serial.print(lastValue);
+			Serial.print(" to ");
+			Serial.println(outValue);
+			Serial.println();	
+		}
+		lastValue = outValue;
+	}
 	
 	selCh.outValue = outValue;
 	selCh.lastValue = lastValue;
 	selCh.specialCode = specialCode;
 	selCh.fadeRising = fadeRising;
-	selCh.fadeDelay = fadeDelay;	
-	return delayAfter;
+	selCh.fadeDelay = fadeDelay;
+
+	return selCh;
 }
 
 byte numButton(byte num) {
-	if(debug) {
+	if(DEBUG) {
 		Serial.print(F("No. "));
 		Serial.println(num);
 	}
@@ -317,6 +383,10 @@ byte numButton(byte num) {
 }
 
 void selectChannel(byte chNum) {
+	if(DEBUG) {
+		Serial.print(F("Selecting channel no. "));
+		Serial.println(chNum);
+	}
 	//validate channel selection:
 	if(chNum > channelsAmnt) {
 		digitalWrite(ERR_LED, HIGH);
@@ -324,35 +394,47 @@ void selectChannel(byte chNum) {
 	}
 	//flash selected channels:
 	if(chNum == 0) { //all channels selected
-		//we'll be changing the pin write values away from the outValue but we'll change them back soon:
+		//we'll be changing the pin write values away from the outValue for the flash
 		for(byte i=0; i<channelsAmnt; i++) {
 			if(channels[i].outValue > MIN_BRIGHTNESS) analogWrite(channels[i].pin, 0);
 			else analogWrite(channels[i].pin, MIN_BRIGHTNESS);
-		}
-		delay(PAUSE_DELAY);
-		for(byte i=0; i<channelsAmnt; i++) {
+			delay(PAUSE_DELAY/channelsAmnt);
+			if(DEBUG) {
+				Serial.print(F("Selected channel at pin "));
+				Serial.println(channels[i].pin);
+			}
 			analogWrite(channels[i].pin, channels[i].outValue);
 		}
-		//2*O(n) is still linear complexity O(n^1) :)
 	}
 	else { //only one channel selected
 		channel selected = channels[chNum-1];
 		if(selected.outValue > MIN_BRIGHTNESS) analogWrite(selected.pin, 0);
 		else analogWrite(selected.pin, MIN_BRIGHTNESS);
 		delay(PAUSE_DELAY);
+		if(DEBUG) {
+			Serial.print(F("Selected channel at pin"));
+			Serial.println(selected.pin);
+		}
 		analogWrite(selected.pin, selected.outValue);
 	}
 
 	selectedChannel = chNum; //set the global
+	channelSelect = false;
 }
 
 void loop() {
-    if (IrReceiver.decode()) {
+	#ifndef NOIR
+    if(IrReceiver.decode()) {
+    #else
+    if(Serial.available() > 0) {
+    #endif
     	digitalWrite(STATUS_LED, HIGH);
     	delay(50);
-        if(debug) Serial.println();
+        if(DEBUG) Serial.println();
         commands();
+        #ifndef NOIR
 		IrReceiver.resume(); //receive the next value
+		#endif
     	digitalWrite(STATUS_LED, LOW);
     }
     //look for specialCodes in every channel:
