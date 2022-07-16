@@ -7,22 +7,19 @@
 	#define DEBUG
 #endif
 
-#define STATUS_LED 3
-#define ERR_LED 13
+#define STATUS_LED	3		//green
+#define ERR_LED		13		//red
 
 #define MAX_OUT 255			//max analogWrite() value
 
-#define STEP_SIZE 5			//step size for the up/down buttons
-#define MIN_BRIGHTNESS 50	//lowest observable brightness, so as not to suddenly blind the user
-#define STEP_TRANSITION 15	//the point at which the steps transition from STEP_SIZE to 1
+#define STEP_SIZE		5	//step size for the up/down buttons
+#define MIN_BRIGHTNESS	50	//lowest observable brightness, so as not to suddenly blind the user
+#define STEP_TRANSITION	15	//the point at which the steps transition from STEP_SIZE to 1
 
-#define PAUSE_DELAY 750		//the basic pause between command acceptance
-
-long currCom = 0;			//current command
-long lastCom = 0;			//last valid command
+#define PAUSE_DELAY		750	//the basic pause between command acceptance
 
 byte selectedChannel = 0;	//the channel to be acted upon
-bool channelSelect = false;	//are we selecting a channel?
+bool chSelActive = false;	//are we selecting a channel?
 byte channelsAmnt;			//the amount of available channels according to channels[]
 
 struct channel {
@@ -70,10 +67,16 @@ enum action {
 	HASH,
 	
 	SPECIAL,	//special action, determined by the specialCode
-	HELP,		//display
+	HELP,		//display help message for serial
 	REPEAT,		//repeat the lastCom
 	ERR			//no action taken because of wrong command
 };
+
+//actions that should be ran only once, and not for every channel:
+action runOnceActions[] = {HASH, HELP, ERR};
+
+action currCom = 0; //current command
+action lastCom = 0; //last valid command
 
 #ifndef NOIR
 	#include <IRremote.h>
@@ -253,7 +256,7 @@ void selectChannel(byte chNum) {
 	}
 
 	selectedChannel = chNum; //set the global
-	channelSelect = false; //clear the select flag. resume normal operation
+	chSelActive = false; //clear the select flag. resume normal operation
 }
 
 void commands() {
@@ -272,22 +275,32 @@ void commands() {
 	if(currCom) {
 	#endif //end #ifdef NOIR
 		if(currCom == REPEAT) currCom = lastCom;
-		bool chSelectionActive = channelSelect;
+		bool chSelActiveOriginal = chSelActive;
 		bool delayAfter = false;
-
+		
+		byte tempChannel = selectedChannel;
+		//check if action should be ran for every channel, or only once.
+		//get amount of single-channel actions and iterate over all:
+		byte runOnceActionsAmnt = sizeof(runOnceActions) / sizeof(runOnceActions[0]);
+		for(byte i=0; i<runOnceActionsAmnt; i++) {
+			if(currCom == runOnceActions[i]) selectedChannel = 1; 
+		}
+			
 		//check channel selection and act:
 		if(selectedChannel == 0) { //if all channels are selected:
 			for(byte i=0; i<channelsAmnt; i++) { //go over every channel:
-				//if chSelectionActive is true but channelSelect is false, a channel has just been selected. do not run act().
-				//if chSelectionActive is false but channelSelect is true, a select command has just been issued. no need to run act() again.
+				//if chSelActiveOriginal is true but chSelActive is false, a channel has just been selected. do not run act().
+				//if chSelActiveOriginal is false but chSelActive is true, a select command has just been issued. no need to run act() again.
 				//if both are false, normal operation. run act().
 				//if both are true, a selection is pending. run act().
-				if(chSelectionActive == channelSelect) delayAfter = act(currCom, i);
+				if(chSelActiveOriginal == chSelActive) delayAfter = act(currCom, i);
 			}
 		}
 		else { //if not all channels are selected, act only for one channel:
 			delayAfter = act(currCom, selectedChannel-1);
 		}
+
+		selectedChannel = tempChannel; //restore the original selectedChannel value.
 
 		//now update the channel outValues:
 		for(byte i=0; i<channelsAmnt; i++) {
@@ -298,12 +311,12 @@ void commands() {
 		if(delayAfter) {
 			digitalWrite(STATUS_LED, HIGH);
 			delay(PAUSE_DELAY);
-			digitalWrite(STATUS_LED, LOW);
+			if(!chSelActive) digitalWrite(STATUS_LED, LOW); //if a channel selection is pending, keep the LED on
 			digitalWrite(ERR_LED, LOW);
 		}
 		
 		//update lastCom if the last command wasn't a repeat and it wasn't a channel selection:
-		if(currCom != REPEAT && !chSelectionActive) lastCom = currCom;
+		if(currCom != REPEAT && !chSelActiveOriginal) lastCom = currCom;
 	} //end if(currCom)
 } //end commands()
 
@@ -383,52 +396,52 @@ bool act(action currCom, byte chIndex) {
 		break; //end case DOWN:
 			
 		case ZERO:
-			if(!channelSelect) numButton(0, chIndex);
+			if(!chSelActive) numButton(0, chIndex);
 			else selectChannel(0);
 			delayAfter = true;
 		break;
 		case ONE:
-			if(!channelSelect) numButton(1, chIndex);
+			if(!chSelActive) numButton(1, chIndex);
 			else selectChannel(1);
 			delayAfter = true;
 		break;
 		case TWO:
-			if(!channelSelect) numButton(2, chIndex);
+			if(!chSelActive) numButton(2, chIndex);
 			else selectChannel(2);
 			delayAfter = true;
 		break;
 		case THREE:
-			if(!channelSelect) numButton(3, chIndex);
+			if(!chSelActive) numButton(3, chIndex);
 			else selectChannel(3);
 			delayAfter = true;
 		break;
 		case FOUR:
-			if(!channelSelect) numButton(4, chIndex);
+			if(!chSelActive) numButton(4, chIndex);
 			else selectChannel(4);
 			delayAfter = true;
 		break;
 		case FIVE:
-			if(!channelSelect) numButton(5, chIndex);
+			if(!chSelActive) numButton(5, chIndex);
 			else selectChannel(5);
 			delayAfter = true;
 		break;
 		case SIX:
-			if(!channelSelect) numButton(6, chIndex);
+			if(!chSelActive) numButton(6, chIndex);
 			else selectChannel(6);
 			delayAfter = true;
 		break;
 		case SEVEN:
-			if(!channelSelect) numButton(7, chIndex);
+			if(!chSelActive) numButton(7, chIndex);
 			else selectChannel(7);
 			delayAfter = true;
 		break;
 		case EIGHT:
-			if(!channelSelect) numButton(8, chIndex);
+			if(!chSelActive) numButton(8, chIndex);
 			else selectChannel(8);
 			delayAfter = true;
 		break;
 		case NINE:
-			if(!channelSelect) numButton(9, chIndex);
+			if(!chSelActive) numButton(9, chIndex);
 			else selectChannel(9);
 			delayAfter = true;
 		break;
@@ -473,9 +486,9 @@ bool act(action currCom, byte chIndex) {
 			#ifdef DEBUG
 				Serial.print(F("Channel selection "));
 			#endif
-			channelSelect = !channelSelect;
+			chSelActive = !chSelActive;
 			#ifdef DEBUG
-				if(channelSelect)	Serial.println(F("turned on"));
+				if(chSelActive)	Serial.println(F("turned on"));
 				else				Serial.println(F("turned off"));
 			#endif
 			delayAfter = true;
@@ -493,7 +506,7 @@ bool act(action currCom, byte chIndex) {
 
 	
 	#ifdef DEBUG
-		//if you're not in the middle of a special action routine, show debugs.
+		//if you're not in the middle of a special action routine, show debugs
 		//if a special action is in progress, do not print and do not spam
 		if(!channels[chIndex].specialCode) {
 			Serial.print(F("Acting on channel at index: "));
