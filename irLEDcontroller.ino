@@ -7,8 +7,8 @@
 	#define DEBUG
 #endif
 
-#define STATUS_LED	3		//green
-#define ERR_LED		13		//red
+#define STATUS_LED	0		//green
+#define ERR_LED		1		//red
 
 #define MAX_OUT 255			//max analogWrite() value
 
@@ -36,9 +36,9 @@ struct channel {
 };
 
 channel channels[] = {
-	{ 5,  false, MIN_BRIGHTNESS/2, MIN_BRIGHTNESS/2, 0, true, 10 },
-	{ 10, false, MIN_BRIGHTNESS/2, MIN_BRIGHTNESS/2, 0, true, 10 },
-	{ 9,  false, MIN_BRIGHTNESS/2, MIN_BRIGHTNESS/2, 0, true, 10 }
+	{ 5,  false, MIN_BRIGHTNESS, MIN_BRIGHTNESS, 0, true, 10 },
+	{ 10, false, MIN_BRIGHTNESS, MIN_BRIGHTNESS, 0, true, 10 },
+	{ 9,  false, MIN_BRIGHTNESS, MIN_BRIGHTNESS, 0, true, 10 }
 };
 
 /* Mind the PWM timers, pins 3 and 11 are controlled by timer 2,
@@ -183,22 +183,28 @@ void setup() {
 	OSCCAL = 0x39;
 	channelsAmnt = sizeof(channels)/sizeof(channels[0]);
 	
-    pinMode(STATUS_LED, OUTPUT);
-    pinMode(ERR_LED, OUTPUT);
-    for(byte i=0; i<channelsAmnt; i++) {
-    	pinMode(channels[i].pin, OUTPUT);
-    }
+	pinMode(STATUS_LED, OUTPUT);
+	pinMode(ERR_LED, OUTPUT);
+	digitalWrite(STATUS_LED, HIGH);
+	digitalWrite(ERR_LED, HIGH);
+	
+	for(byte i=0; i<channelsAmnt; i++) {
+		pinMode(channels[i].pin, OUTPUT);
+	}
 
-    #ifndef NOIR
-		IrReceiver.enableIRIn();  //start the receiver
-		IrReceiver.blink13(false); //enable feedback LED
+	#ifndef NOIR
+		IrReceiver.enableIRIn(); //start the receiver
+		IrReceiver.blink13(false); //disable feedback LED
 	#else
 		Serial.begin(9600);
 		while(!Serial);
-	    Serial.println("Ready.");
+		Serial.println("Ready.");
 	#endif
 
-    digitalWrite(ERR_LED, LOW);
+	PORTD = PORTD | 0x00000011;
+	delay(PAUSE_DELAY);
+	digitalWrite(ERR_LED, LOW);
+	digitalWrite(STATUS_LED, LOW);
 }
 
 void numButton(byte num, byte chIndex) {
@@ -222,6 +228,10 @@ void selectChannel(byte chNum) {
 	//validate channel selection:
 	if(chNum > channelsAmnt || chNum < 0) {
 		digitalWrite(ERR_LED, HIGH);
+		#ifdef DEBUG
+			Serial.print("Illegal channel selection: ");
+			Serial.println(chNum);
+		#endif
 		chNum = 0;
 	}
 	
@@ -229,8 +239,8 @@ void selectChannel(byte chNum) {
 	if(chNum == 0) { //all channels selected
 		//we'll be flashing each channel in channels:
 		for(byte i=0; i<channelsAmnt; i++) {
-			if(channels[i].outValue > MIN_BRIGHTNESS) analogWrite(channels[i].pin, 0);
-			else analogWrite(channels[i].pin, MIN_BRIGHTNESS*1.5);
+			if(channels[i].outValue > MIN_BRIGHTNESS*2) analogWrite(channels[i].pin, MIN_BRIGHTNESS);
+			else analogWrite(channels[i].pin, 0);
 			delay(PAUSE_DELAY/channelsAmnt);
 			analogWrite(channels[i].pin, channels[i].outValue);
 			#ifdef DEBUG
@@ -245,8 +255,8 @@ void selectChannel(byte chNum) {
 	}
 	else { //only one channel selected
 		byte i = chNum-1; //chNum 1 means channel at index 0 and so on.
-		if(channels[i].outValue > MIN_BRIGHTNESS) analogWrite(channels[i].pin, 0);
-		else analogWrite(channels[i].pin, MIN_BRIGHTNESS*1.5);
+		if(channels[i].outValue > MIN_BRIGHTNESS*2) analogWrite(channels[i].pin, MIN_BRIGHTNESS);
+		else analogWrite(channels[i].pin, 0);
 		delay(PAUSE_DELAY);
 		analogWrite(channels[i].pin, channels[i].outValue);
 		#ifdef DEBUG
@@ -276,18 +286,23 @@ void commands() {
 	#endif //end #ifdef NOIR
 		if(currCom == REPEAT) currCom = lastCom;
 		bool chSelActiveOriginal = chSelActive;
-		bool delayAfter = false;
+		bool delayAfter;
 		
-		byte tempChannel = selectedChannel;
+		bool runOnce = false;
 		//check if action should be ran for every channel, or only once.
 		//get amount of single-channel actions and iterate over all:
 		byte runOnceActionsAmnt = sizeof(runOnceActions) / sizeof(runOnceActions[0]);
 		for(byte i=0; i<runOnceActionsAmnt; i++) {
-			if(currCom == runOnceActions[i]) selectedChannel = 1; 
+			if(currCom == runOnceActions[i]) {
+				runOnce = true; 
+				#ifdef DEBUG
+					Serial.println(F("Acting only once, although all channels selected."));
+				#endif
+			}
 		}
 			
 		//check channel selection and act:
-		if(selectedChannel == 0) { //if all channels are selected:
+		if(selectedChannel == 0 && !runOnce) { //if running for all channels is needed:
 			for(byte i=0; i<channelsAmnt; i++) { //go over every channel:
 				//if chSelActiveOriginal is true but chSelActive is false, a channel has just been selected. do not run act().
 				//if chSelActiveOriginal is false but chSelActive is true, a select command has just been issued. no need to run act() again.
@@ -296,23 +311,9 @@ void commands() {
 				if(chSelActiveOriginal == chSelActive) delayAfter = act(currCom, i);
 			}
 		}
-		else { //if not all channels are selected, act only for one channel:
-			delayAfter = act(currCom, selectedChannel-1);
-		}
-
-		selectedChannel = tempChannel; //restore the original selectedChannel value.
-
-		//now update the channel outValues:
-		for(byte i=0; i<channelsAmnt; i++) {
-			analogWrite(channels[i].pin, channels[i].outValue);
-		}
-
-		//delay if necessary to display the status and error LEDs:
-		if(delayAfter) {
-			digitalWrite(STATUS_LED, HIGH);
-			delay(PAUSE_DELAY);
-			if(!chSelActive) digitalWrite(STATUS_LED, LOW); //if a channel selection is pending, keep the LED on
-			digitalWrite(ERR_LED, LOW);
+		else { //if not all channels are selected or it's a one-run command, act only for one channel:
+			if(runOnce)	delayAfter = act(currCom, channelsAmnt);
+			else 		delayAfter = act(currCom, selectedChannel-1);
 		}
 		
 		//update lastCom if the last command wasn't a repeat and it wasn't a channel selection:
@@ -332,21 +333,21 @@ bool act(action currCom, byte chIndex) {
 		#endif
 		
 		case ONOFF:
-      		#ifdef DEBUG
-      			Serial.println(F("On/off"));
-      		#endif
+			#ifdef DEBUG
+				Serial.println(F("On/off"));
+			#endif
 			if(channels[chIndex].outValue > 0) channels[chIndex].outValue = 0;
-  			else channels[chIndex].outValue = channels[chIndex].lastValue;
-  			delayAfter = true;					//prevent rapid flashing due to IR repeat commands
+			else channels[chIndex].outValue = channels[chIndex].lastValue;
+			delayAfter = true;					//prevent rapid flashing due to IR repeat commands
 			channels[chIndex].specialCode = 0;	//reset any special actions
 		break;
 			
 		case UP:
 		//in standard operation, UP raises the brightness.
 		//in fade, it lengthens the cycle time.
-      		#ifdef DEBUG
-      			Serial.println(F("Up"));
-      		#endif
+			#ifdef DEBUG
+				Serial.println(F("Up"));
+			#endif
 			//if you're in a fade routine:
 			if(channels[chIndex].specialCode == 0xFADE) {
 				channels[chIndex].fadeDelay++; //increment the delay value
@@ -356,11 +357,11 @@ bool act(action currCom, byte chIndex) {
 				#endif
 			}
 			else { //if not in fade:
-	      		//determine the needed step size:
-	      		if(channels[chIndex].outValue < STEP_TRANSITION)
-	      			channels[chIndex].outValue += 1;
-	      		else channels[chIndex].outValue += STEP_SIZE;
-	      		
+				//determine the needed step size:
+				if(channels[chIndex].outValue < STEP_TRANSITION)
+					channels[chIndex].outValue += 1;
+				else channels[chIndex].outValue += STEP_SIZE;
+	
 				//prevent overflow:
 				if(channels[chIndex].outValue > MAX_OUT) channels[chIndex].outValue = MAX_OUT;
 				channels[chIndex].specialCode = 0;
@@ -370,10 +371,10 @@ bool act(action currCom, byte chIndex) {
 		case DOWN: //down
 		//in standard operation, DOWN lowers the brightness.
 		//in fade, it shortens the cycle time.
-      		#ifdef DEBUG
-      			Serial.println(F("Down"));
-      		#endif
-      		//if you're in a fade routine
+			#ifdef DEBUG
+				Serial.println(F("Down"));
+			#endif
+			//if you're in a fade routine
 			if(channels[chIndex].specialCode == 0xFADE) {
 				channels[chIndex].fadeDelay--; //decrement the delay value
 				//prevent no delay and overflow:
@@ -383,12 +384,12 @@ bool act(action currCom, byte chIndex) {
 					Serial.println(channels[chIndex].fadeDelay);
 				#endif
 			}
-      		else { //if not in fade
-	      		//determine the needed step size:
-	      		if(channels[chIndex].outValue-STEP_SIZE < STEP_TRANSITION)
-	      			channels[chIndex].outValue -= 1;
-	      		else channels[chIndex].outValue -= STEP_SIZE;
-	      		
+			else { //if not in fade
+				//determine the needed step size:
+				if(channels[chIndex].outValue-STEP_SIZE < STEP_TRANSITION)
+					channels[chIndex].outValue -= 1;
+				else channels[chIndex].outValue -= STEP_SIZE;
+				
 				//prevent overflow:
 				if(channels[chIndex].outValue < 0) channels[chIndex].outValue = 0;
 				channels[chIndex].specialCode = 0;
@@ -396,54 +397,74 @@ bool act(action currCom, byte chIndex) {
 		break; //end case DOWN:
 			
 		case ZERO:
-			if(!chSelActive) numButton(0, chIndex);
+			if(!chSelActive) {
+				delayAfter = true;
+				numButton(0, chIndex);
+			}
 			else selectChannel(0);
-			delayAfter = true;
 		break;
 		case ONE:
-			if(!chSelActive) numButton(1, chIndex);
+			if(!chSelActive) {
+				delayAfter = true;
+				numButton(1, chIndex);
+			}
 			else selectChannel(1);
-			delayAfter = true;
 		break;
 		case TWO:
-			if(!chSelActive) numButton(2, chIndex);
+			if(!chSelActive) {
+				delayAfter = true;
+				numButton(2, chIndex);
+			}
 			else selectChannel(2);
-			delayAfter = true;
 		break;
 		case THREE:
-			if(!chSelActive) numButton(3, chIndex);
+			if(!chSelActive) {
+				delayAfter = true;
+				numButton(3, chIndex);
+			}
 			else selectChannel(3);
-			delayAfter = true;
 		break;
 		case FOUR:
-			if(!chSelActive) numButton(4, chIndex);
+			if(!chSelActive) {
+				delayAfter = true;
+				numButton(4, chIndex);
+			}
 			else selectChannel(4);
-			delayAfter = true;
 		break;
 		case FIVE:
-			if(!chSelActive) numButton(5, chIndex);
+			if(!chSelActive) {
+				delayAfter = true;
+				numButton(5, chIndex);
+			}
 			else selectChannel(5);
-			delayAfter = true;
 		break;
 		case SIX:
-			if(!chSelActive) numButton(6, chIndex);
+			if(!chSelActive) {
+				delayAfter = true;
+				numButton(6, chIndex);
+			}
 			else selectChannel(6);
-			delayAfter = true;
 		break;
 		case SEVEN:
-			if(!chSelActive) numButton(7, chIndex);
+			if(!chSelActive) {
+				delayAfter = true;
+				numButton(7, chIndex);
+			}
 			else selectChannel(7);
-			delayAfter = true;
 		break;
 		case EIGHT:
-			if(!chSelActive) numButton(8, chIndex);
+			if(!chSelActive) {
+				delayAfter = true;
+				numButton(8, chIndex);
+			}
 			else selectChannel(8);
-			delayAfter = true;
 		break;
 		case NINE:
-			if(!chSelActive) numButton(9, chIndex);
+			if(!chSelActive) {
+				delayAfter = true;
+				numButton(9, chIndex);
+			}
 			else selectChannel(9);
-			delayAfter = true;
 		break;
 
 		case ASTERIX:
@@ -489,7 +510,7 @@ bool act(action currCom, byte chIndex) {
 			chSelActive = !chSelActive;
 			#ifdef DEBUG
 				if(chSelActive)	Serial.println(F("turned on"));
-				else				Serial.println(F("turned off"));
+				else			Serial.println(F("turned off"));
 			#endif
 			delayAfter = true;
 		break;
@@ -500,17 +521,26 @@ bool act(action currCom, byte chIndex) {
 				Serial.println(F("Unrecognized command."));
 			#endif
 			digitalWrite(ERR_LED, HIGH);
-  			delayAfter = true;
+			delayAfter = true;
+			delay(100);
 		break;
 	}
 
+	analogWrite(channels[chIndex].pin, channels[chIndex].outValue);
+
+	//delay if necessary to display the status and error LEDs:
+	if(delayAfter) delay(PAUSE_DELAY/channelsAmnt);
+	digitalWrite(ERR_LED, LOW);
+	if(!chSelActive) digitalWrite(STATUS_LED, LOW);
 	
 	#ifdef DEBUG
 		//if you're not in the middle of a special action routine, show debugs
 		//if a special action is in progress, do not print and do not spam
 		if(!channels[chIndex].specialCode) {
-			Serial.print(F("Acting on channel at index: "));
+			Serial.print(F("Acted on channel at index: "));
 			Serial.println(chIndex, DEC);
+			Serial.print(F("Currently selected channel: "));
+			Serial.println(selectedChannel);
 			Serial.print(F("Out value: "));
 			Serial.println(channels[chIndex].outValue, DEC);
 			Serial.print(F("Last value: "));
@@ -525,31 +555,30 @@ bool act(action currCom, byte chIndex) {
 
 	analogWrite(channels[chIndex].pin, channels[chIndex].outValue);
 	return delayAfter;
-}
+} //end act()
 
 void loop() {
 	//wait for data:
 	#ifndef NOIR
-    if(IrReceiver.decode()) {
-    #else
-    if(Serial.available() > 0) {
-    #endif
-    	
-    	digitalWrite(STATUS_LED, HIGH); //show busy/waiting
-        #ifdef DEBUG
-        	Serial.println();
-        #endif
-        
-        commands();
-        
-        #ifndef NOIR
+	if(IrReceiver.decode()) {
+	#else
+	if(Serial.available() > 0) {
+	#endif
+		#ifdef DEBUG
+			Serial.println();
+		#endif
+
+		digitalWrite(STATUS_LED, HIGH);
+		commands();
+		
+		#ifndef NOIR
 			IrReceiver.resume(); //receive the next value
 		#endif
 		
-    	digitalWrite(STATUS_LED, LOW); //end busy/waiting
-    }
-    
-    //look for specialCodes in every channel:
+		//digitalWrite(STATUS_LED, LOW); //end busy/waiting
+	}
+	
+	//look for specialCodes in every channel:
 	for(byte i=0; i<channelsAmnt; i++) {
 		if(channels[i].specialCode) act(SPECIAL, i);
 	}
